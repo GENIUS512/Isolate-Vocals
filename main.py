@@ -9,6 +9,14 @@ import uuid
 import gc
 from pathlib import Path
 
+# Принудительно отключаем CUDA ДО импорта torch
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
+# Теперь безопасно импортируем
+import torch
+torch.device('cpu')
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -21,8 +29,8 @@ JOBS_DIR = APP_ROOT / "jobs"
 JOBS_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"}
-MAX_FILE_SIZE_MB = 8   # 8 МБ для экономии памяти
-MAX_DURATION_SEC = 120  # 2 минуты
+MAX_FILE_SIZE_MB = 6   # Уменьшаем до 6 МБ
+MAX_DURATION_SEC = 90  # 1.5 минуты
 
 app = FastAPI(title="Отдельно — разделение вокала и инструментала")
 
@@ -38,6 +46,11 @@ def run_demucs(input_path: Path, out_dir: Path) -> Path:
     """Запускает Demucs с минимальным потреблением памяти"""
     env = os.environ.copy()
     
+    # Принудительно отключаем CUDA
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    env["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+    env["TORCH_DEVICE"] = "cpu"
+    
     # Максимальные ограничения для экономии памяти
     env["OMP_NUM_THREADS"] = "1"
     env["MKL_NUM_THREADS"] = "1"
@@ -48,15 +61,19 @@ def run_demucs(input_path: Path, out_dir: Path) -> Path:
     
     # Используем самую лёгкую модель
     cmd = [
-        "python", "-m", "demucs",
-        "--two-stems", "vocals",
-        "-n", "htdemucs",
-        "-d", "cpu",
-        "--segment", "4",
-        "-o", str(out_dir),
-        "--shifts", "1",
-        "--overlap", "0.25",
-        str(input_path),
+        "python", "-c",
+        f"""
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+import torch
+torch.device('cpu')
+from demucs import separate
+import sys
+sys.argv = ['demucs', '--two-stems', 'vocals', '-n', 'htdemucs', '-d', 'cpu', 
+            '--segment', '4', '-o', '{out_dir}', '--shifts', '1', 
+            '--overlap', '0.25', '{input_path}']
+separate.main()
+""",
     ]
     
     try:
@@ -65,12 +82,20 @@ def run_demucs(input_path: Path, out_dir: Path) -> Path:
             capture_output=True, 
             text=True, 
             env=env,
-            timeout=300  # 5 минут максимум
+            timeout=300
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("Demucs превысил время выполнения")
     
     if result.returncode != 0:
+        # Проверяем, может быть файлы уже созданы частично
+        out_path = Path(out_dir)
+        for subdir in out_path.iterdir():
+            if subdir.is_dir():
+                stem_dir = subdir / input_path.stem
+                if stem_dir.exists() and (stem_dir / "vocals.wav").exists():
+                    return stem_dir
+        
         error_msg = result.stderr[-2000:] if result.stderr else "Нет вывода stderr"
         raise RuntimeError(f"Demucs завершился с ошибкой: {error_msg}")
 
@@ -207,8 +232,7 @@ async def cleanup(job_id: str):
 
 @app.get("/api/health")
 async def health():
-    # Простой ответ для проверки здоровья
-    return {"status": "ok", "memory": "healthy"}
+    return {"status": "ok"}
 
 
 # Главная страница
@@ -217,5 +241,5 @@ async def index():
     return FileResponse(FRONTEND_DIR / "index.html")
 
 
-# Монтируем статику после всех эндпоинтов
+# Монтируем статику
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
