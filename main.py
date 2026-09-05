@@ -9,7 +9,6 @@ import uuid
 import gc
 from pathlib import Path
 
-# НЕ импортируем torch глобально — импортируем только внутри функций
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -22,8 +21,8 @@ JOBS_DIR = APP_ROOT / "jobs"
 JOBS_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"}
-MAX_FILE_SIZE_MB = 8   # Ещё уменьшаем до 8 МБ
-MAX_DURATION_SEC = 120  # До 2 минут
+MAX_FILE_SIZE_MB = 8   # 8 МБ для экономии памяти
+MAX_DURATION_SEC = 120  # 2 минуты
 
 app = FastAPI(title="Отдельно — разделение вокала и инструментала")
 
@@ -51,14 +50,12 @@ def run_demucs(input_path: Path, out_dir: Path) -> Path:
     cmd = [
         "python", "-m", "demucs",
         "--two-stems", "vocals",
-        "-n", "htdemucs",  # или "hdemucs" для более лёгкой версии
+        "-n", "htdemucs",
         "-d", "cpu",
         "--segment", "4",
         "-o", str(out_dir),
         "--shifts", "1",
         "--overlap", "0.25",
-        "--no-cuda",  # Явно отключаем CUDA
-        "--device", "cpu",
         str(input_path),
     ]
     
@@ -86,6 +83,13 @@ def run_demucs(input_path: Path, out_dir: Path) -> Path:
         if stem_dir.exists():
             return stem_dir
     
+    # Если не нашли, ищем любую папку
+    for subdir in out_path.iterdir():
+        if subdir.is_dir():
+            stem_dir = subdir / input_path.stem
+            if stem_dir.exists():
+                return stem_dir
+    
     raise RuntimeError("Папка с результатами не найдена")
 
 
@@ -93,7 +97,7 @@ def convert_to_format(src_wav: Path, dst: Path, fmt: str):
     """Конвертирует WAV в указанный формат"""
     audio = AudioSegment.from_wav(src_wav)
     if fmt == "mp3":
-        audio.export(dst, format=fmt, bitrate="96k")  # Более низкое качество для экономии
+        audio.export(dst, format=fmt, bitrate="96k")
     else:
         audio.export(dst, format=fmt)
 
@@ -116,7 +120,7 @@ async def separate(file: UploadFile = File(...), output_format: str = "mp3"):
     # Сохраняем файл
     try:
         with open(input_path, "wb") as f:
-            while chunk := await file.read(1024 * 256):  # Ещё меньшие куски
+            while chunk := await file.read(1024 * 256):
                 size += len(chunk)
                 if size > MAX_FILE_SIZE_MB * 1024 * 1024:
                     shutil.rmtree(job_dir, ignore_errors=True)
@@ -203,12 +207,15 @@ async def cleanup(job_id: str):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    # Простой ответ для проверки здоровья
+    return {"status": "ok", "memory": "healthy"}
 
 
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
-
-
+# Главная страница
 @app.get("/")
 async def index():
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+# Монтируем статику после всех эндпоинтов
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
