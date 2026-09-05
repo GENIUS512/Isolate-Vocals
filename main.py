@@ -18,6 +18,10 @@ import subprocess
 import uuid
 from pathlib import Path
 
+# ВАЖНО: импортируем numpy до torch, чтобы избежать ошибок инициализации
+import numpy as np
+import torch
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -49,13 +53,16 @@ def run_demucs(input_path: Path, out_dir: Path) -> Path:
     # ощутимо раздувают пиковую память на слабом CPU/RAM.
     env["OMP_NUM_THREADS"] = "1"
     env["MKL_NUM_THREADS"] = "1"
+    # Дополнительные настройки для стабильности
+    env["PYTHONHASHSEED"] = "0"
+    env["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
     cmd = [
         "python", "-m", "demucs",
         "--two-stems", "vocals",
         "-n", "htdemucs",
         "-d", "cpu",
-        "--segment", "7",   # Максимальный сегмент для htdemucs — 7.8 секунд
+        "--segment", "7",   # Максимальный сегмент для htdemucs — 7.8 секунд, используем 7 (целое число)
         "-o", str(out_dir),
         str(input_path),
     ]
