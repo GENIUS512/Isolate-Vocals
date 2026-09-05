@@ -1,26 +1,22 @@
 """
 ОТДЕЛЬНО — единый сервис для Render.com (Docker, бесплатный план).
-Один контейнер: FastAPI отдаёт статический фронтенд И обрабатывает
-запросы на разделение вокала/инструментала через Demucs.
-
-Подогнано под ограничение по памяти бесплатного тарифа Render (512 МБ):
-- аудио обрабатывается кусками (--segment), а не целиком
-- torch ограничен одним потоком, чтобы не раздувать память на аллокаторах
-- уменьшен максимальный размер файла
-
-Работает только с файлами, которые пользователь загружает сам.
-Скачивание по внешним ссылкам (YouTube и т.п.) не реализовано.
+Оптимизированная версия с минимальным потреблением памяти.
 """
 
 import os
 import shutil
 import subprocess
 import uuid
+import gc
 from pathlib import Path
 
-# ВАЖНО: импортируем numpy до torch, чтобы избежать ошибок инициализации
+# ВАЖНО: импортируем numpy и настраиваем torch до всего остального
 import numpy as np
 import torch
+
+# Настройка PyTorch для минимального потребления памяти
+torch.set_num_threads(1)
+torch.set_default_dtype(torch.float32)
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,8 +30,8 @@ JOBS_DIR = APP_ROOT / "jobs"
 JOBS_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"}
-MAX_FILE_SIZE_MB = 15   # держим маленьким — 512 МБ RAM на free-плане Render это диктуют
-MAX_DURATION_SEC = 240  # ~4 минуты, подстраховка от долгих треков, которые не влезут в память
+MAX_FILE_SIZE_MB = 10   # Уменьшаем до 10 МБ для экономии памяти
+MAX_DURATION_SEC = 180  # Уменьшаем до 3 минут
 
 app = FastAPI(title="Отдельно — разделение вокала и инструментала")
 
@@ -48,39 +44,70 @@ app.add_middleware(
 
 
 def run_demucs(input_path: Path, out_dir: Path) -> Path:
+    """Запускает Demucs с минимальным потреблением памяти"""
     env = os.environ.copy()
-    # Ограничиваем torch одним потоком — иначе многопоточные аллокации
-    # ощутимо раздувают пиковую память на слабом CPU/RAM.
+    
+    # Жёсткие ограничения для экономии памяти
     env["OMP_NUM_THREADS"] = "1"
     env["MKL_NUM_THREADS"] = "1"
-    # Дополнительные настройки для стабильности
+    env["OPENBLAS_NUM_THREADS"] = "1"
+    env["VECLIB_MAXIMUM_THREADS"] = "1"
+    env["NUMEXPR_NUM_THREADS"] = "1"
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:32"
     env["PYTHONHASHSEED"] = "0"
-    env["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
+    
+    # Используем более лёгкую модель и меньший сегмент
     cmd = [
         "python", "-m", "demucs",
         "--two-stems", "vocals",
-        "-n", "htdemucs",
+        "-n", "hdemucs",  # Используем более лёгкую модель вместо htdemucs
         "-d", "cpu",
-        "--segment", "7",   # Максимальный сегмент для htdemucs — 7.8 секунд, используем 7 (целое число)
+        "--segment", "4",  # Ещё меньше сегмент для экономии памяти
         "-o", str(out_dir),
+        "--shifts", "1",   # Меньше сдвигов для ускорения
+        "--overlap", "0.25",  # Меньше перекрытия
         str(input_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Demucs превысил время выполнения (10 минут)")
+    
     if result.returncode != 0:
-        # Выводим полную ошибку для отладки
         error_msg = result.stderr[-2000:] if result.stderr else "Нет вывода stderr"
         raise RuntimeError(f"Demucs завершился с ошибкой: {error_msg}")
 
-    stem_dir = out_dir / "htdemucs" / input_path.stem
-    if not stem_dir.exists():
-        raise RuntimeError("Demucs не создал ожидаемую папку с результатами")
-    return stem_dir
+    # Пытаемся найти папку с результатами (может быть hdemucs или htdemucs)
+    out_path = Path(out_dir)
+    possible_dirs = ["hdemucs", "htdemucs", "mdx_extra_q"]
+    
+    for model_dir in possible_dirs:
+        stem_dir = out_path / model_dir / input_path.stem
+        if stem_dir.exists():
+            return stem_dir
+    
+    # Если не нашли, пробуем найти любую папку с результатами
+    for subdir in out_path.iterdir():
+        if subdir.is_dir():
+            stem_dir = subdir / input_path.stem
+            if stem_dir.exists():
+                return stem_dir
+    
+    raise RuntimeError("Demucs не создал ожидаемую папку с результатами")
 
 
 def convert_to_format(src_wav: Path, dst: Path, fmt: str):
-    audio = AudioSegment.from_wav(src_wav)
-    audio.export(dst, format=fmt)
+    """Конвертирует WAV в указанный формат"""
+    try:
+        audio = AudioSegment.from_wav(src_wav)
+        # Уменьшаем качество для экономии памяти
+        if fmt == "mp3":
+            audio.export(dst, format=fmt, bitrate="128k")
+        else:
+            audio.export(dst, format=fmt)
+    except Exception as e:
+        raise RuntimeError(f"Ошибка конвертации: {str(e)}")
 
 
 @app.post("/api/separate")
@@ -97,52 +124,71 @@ async def separate(file: UploadFile = File(...), output_format: str = "mp3"):
 
     input_path = job_dir / f"input{ext}"
     size = 0
-    with open(input_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_FILE_SIZE_MB * 1024 * 1024:
-                shutil.rmtree(job_dir, ignore_errors=True)
-                raise HTTPException(413, f"Файл больше {MAX_FILE_SIZE_MB} МБ — на бесплатном тарифе это предел по памяти")
-            f.write(chunk)
+    
+    # Сохраняем файл с ограничением по размеру
+    try:
+        with open(input_path, "wb") as f:
+            while chunk := await file.read(1024 * 512):  # Читаем меньшими кусками
+                size += len(chunk)
+                if size > MAX_FILE_SIZE_MB * 1024 * 1024:
+                    shutil.rmtree(job_dir, ignore_errors=True)
+                    raise HTTPException(413, f"Файл больше {MAX_FILE_SIZE_MB} МБ")
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(500, f"Ошибка загрузки файла: {str(e)}")
 
+    # Проверяем длительность
     try:
         audio_check = AudioSegment.from_file(input_path)
         duration_sec = len(audio_check) / 1000.0
         if duration_sec > MAX_DURATION_SEC:
             shutil.rmtree(job_dir, ignore_errors=True)
-            raise HTTPException(413, f"Трек длиннее {MAX_DURATION_SEC // 60} минут — на бесплатном тарифе может не хватить памяти")
+            raise HTTPException(413, f"Трек длиннее {MAX_DURATION_SEC // 60} минут")
+        # Освобождаем память
+        del audio_check
+        gc.collect()
     except HTTPException:
         raise
     except Exception:
-        pass  # если pydub не смог прочитать метаданные — просто пробуем разделить как есть
+        pass
 
+    # Запускаем Demucs
     try:
         stem_dir = run_demucs(input_path, job_dir / "out")
     except RuntimeError as e:
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(500, str(e))
 
+    # Проверяем результаты
     vocals_wav = stem_dir / "vocals.wav"
     instr_wav = stem_dir / "no_vocals.wav"
 
-    # Проверяем, что файлы существуют
     if not vocals_wav.exists() or not instr_wav.exists():
         shutil.rmtree(job_dir, ignore_errors=True)
-        raise HTTPException(500, "Demucs не создал ожидаемые файлы: vocals.wav или no_vocals.wav")
+        raise HTTPException(500, "Demucs не создал ожидаемые файлы")
 
-    vocals_out = job_dir / f"vocal.{output_format}"
-    instr_out = job_dir / f"instrumental.{output_format}"
+    # Конвертируем результаты
+    try:
+        vocals_out = job_dir / f"vocal.{output_format}"
+        instr_out = job_dir / f"instrumental.{output_format}"
 
-    if output_format == "wav":
-        shutil.copy(vocals_wav, vocals_out)
-        shutil.copy(instr_wav, instr_out)
-    else:
-        convert_to_format(vocals_wav, vocals_out, "mp3")
-        convert_to_format(instr_wav, instr_out, "mp3")
+        if output_format == "wav":
+            shutil.copy(vocals_wav, vocals_out)
+            shutil.copy(instr_wav, instr_out)
+        else:
+            convert_to_format(vocals_wav, vocals_out, "mp3")
+            convert_to_format(instr_wav, instr_out, "mp3")
+    except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(500, f"Ошибка конвертации: {str(e)}")
 
-    # чистим исходники и промежуточные файлы Demucs сразу — экономим диск
+    # Чистим временные файлы
     shutil.rmtree(job_dir / "out", ignore_errors=True)
     input_path.unlink(missing_ok=True)
+    gc.collect()
 
     return {
         "job_id": job_id,
@@ -164,17 +210,29 @@ async def cleanup(job_id: str):
     job_dir = JOBS_DIR / job_id
     if job_dir.exists():
         shutil.rmtree(job_dir, ignore_errors=True)
+    gc.collect()
     return {"ok": True}
 
 
 @app.get("/api/health")
 async def health():
+    # Проверяем, что приложение живо
     return {"status": "ok"}
 
 
+# Монтируем статику в самом конце
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 
 @app.get("/")
 async def index():
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+# Обработчик ошибок для 502
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    import traceback
+    print(f"Global error: {exc}")
+    print(traceback.format_exc())
+    return HTTPException(500, f"Внутренняя ошибка сервера: {str(exc)}")
