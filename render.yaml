@@ -1,7 +1,11 @@
 services:
   - type: web
-    name: otdelno
+    name: isolate-vocals
     env: docker
     plan: free
     autoDeploy: true
     healthCheckPath: /api/health
+    numInstances: 1
+    envVars:
+      - key: PORT
+        value: 10000
