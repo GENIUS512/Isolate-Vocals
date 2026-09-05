@@ -55,13 +55,15 @@ def run_demucs(input_path: Path, out_dir: Path) -> Path:
         "--two-stems", "vocals",
         "-n", "htdemucs",
         "-d", "cpu",
-        "--segment", "8",   # обрабатываем по 8-секундным кускам — сильно экономит RAM
+        "--segment", "7.5",   # Максимальный сегмент для htdemucs — 7.8 секунд
         "-o", str(out_dir),
         str(input_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if result.returncode != 0:
-        raise RuntimeError(f"Demucs завершился с ошибкой: {result.stderr[-2000:]}")
+        # Выводим полную ошибку для отладки
+        error_msg = result.stderr[-2000:] if result.stderr else "Нет вывода stderr"
+        raise RuntimeError(f"Demucs завершился с ошибкой: {error_msg}")
 
     stem_dir = out_dir / "htdemucs" / input_path.stem
     if not stem_dir.exists():
@@ -115,6 +117,11 @@ async def separate(file: UploadFile = File(...), output_format: str = "mp3"):
 
     vocals_wav = stem_dir / "vocals.wav"
     instr_wav = stem_dir / "no_vocals.wav"
+
+    # Проверяем, что файлы существуют
+    if not vocals_wav.exists() or not instr_wav.exists():
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(500, "Demucs не создал ожидаемые файлы: vocals.wav или no_vocals.wav")
 
     vocals_out = job_dir / f"vocal.{output_format}"
     instr_out = job_dir / f"instrumental.{output_format}"
