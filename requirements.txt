@@ -7,3 +7,4 @@ pydub==0.25.1
 demucs==4.0.1
 torch==2.2.2+cpu
 torchaudio==2.2.2+cpu
+numpy==1.26.4
