@@ -1,7 +1,7 @@
 #!/bin/bash
-# Устанавливаем лимиты для предотвращения падений
-ulimit -v 450000  # Ограничение виртуальной памяти ~450 МБ
-ulimit -t 600     # Ограничение CPU времени 10 минут
+# Устанавливаем жёсткие лимиты
+ulimit -v 400000  # 400 МБ виртуальной памяти
+ulimit -t 300     # 5 минут CPU времени
 
-# Запускаем приложение
-uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1 --limit-concurrency 1
+# Запускаем с одним воркером
+exec uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1 --limit-concurrency 1 --timeout-keep-alive 30
