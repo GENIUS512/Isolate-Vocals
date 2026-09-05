@@ -55,7 +55,7 @@ def run_demucs(input_path: Path, out_dir: Path) -> Path:
         "--two-stems", "vocals",
         "-n", "htdemucs",
         "-d", "cpu",
-        "--segment", "7.5",   # Максимальный сегмент для htdemucs — 7.8 секунд
+        "--segment", "7",   # Максимальный сегмент для htdemucs — 7.8 секунд
         "-o", str(out_dir),
         str(input_path),
     ]
