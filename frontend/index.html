@@ -1,1 +1,111 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Отдельно — разделение вокала и инструментала</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
 
+<div class="rack">
+
+  <div class="rack__top">
+    <div class="brand">ОТДЕЛЬ<span>НО</span></div>
+    <div class="brand-sub mono">CH.01 — VOCAL / INSTR SPLIT</div>
+  </div>
+
+  <div class="faceplate">
+    <div class="screws tl"></div>
+    <div class="screws tr"></div>
+    <div class="screws bl"></div>
+    <div class="screws br"></div>
+    <h1>Разложи трек на голос и музыку</h1>
+    <p>Загрузи свою запись — получи отдельно вокал и отдельно инструментал. Послушай каждый канал, подстрой громкость фейдером и скачай в mp3 или wav.</p>
+  </div>
+
+  <div class="steps">
+    <div class="step is-active" id="step-1">
+      <div class="step__num mono">01</div>
+      <div class="step__label">Загрузка файла</div>
+    </div>
+    <div class="step" id="step-2">
+      <div class="step__num mono">02</div>
+      <div class="step__label">Разделение дорожек</div>
+    </div>
+    <div class="step" id="step-3">
+      <div class="step__num mono">03</div>
+      <div class="step__label">Прослушивание и экспорт</div>
+    </div>
+  </div>
+
+  <div class="deck">
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="fileInput" accept=".mp3,.wav,.m4a,.flac,.ogg,.aac">
+      <div class="dropzone__title">Перетащи аудиофайл сюда или нажми, чтобы выбрать</div>
+      <div class="dropzone__hint">MP3 · WAV · M4A · FLAC — до 15 МБ, до 4 минут</div>
+    </div>
+
+    <div class="file-row" id="fileRow" style="display:none;">
+      <span>Файл: <strong id="fileName">—</strong></span>
+      <div class="format-toggle">
+        <button type="button" data-format="mp3" class="is-selected">MP3</button>
+        <button type="button" data-format="wav">WAV</button>
+      </div>
+    </div>
+
+    <div class="progress-track" id="progressTrack" style="display:none;">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+
+    <div class="deck__footer">
+      <div class="status-line mono" id="statusLine">Ждём файл.</div>
+      <button class="btn btn-primary" id="separateBtn" disabled>Разделить дорожки</button>
+    </div>
+  </div>
+
+  <div class="strips" id="strips">
+    <div class="strip strip--vocal">
+      <div class="strip__label">Vocal</div>
+      <div class="fader">
+        <div class="fader__track"></div>
+        <div class="fader__ticks">
+          <span>+6</span><span>0</span><span>−12</span><span>−24</span><span>−∞</span>
+        </div>
+        <input type="range" class="fader__input" id="vocalFader" min="0" max="150" value="100" orient="vertical">
+      </div>
+      <div class="strip__value mono"><span id="vocalDb">0 dB</span></div>
+      <div class="strip__actions">
+        <a class="icon-btn" id="vocalDownload" href="#" download>Скачать вокал</a>
+      </div>
+    </div>
+
+    <div class="strip strip--instr">
+      <div class="strip__label">Instrumental</div>
+      <div class="fader">
+        <div class="fader__track"></div>
+        <div class="fader__ticks">
+          <span>+6</span><span>0</span><span>−12</span><span>−24</span><span>−∞</span>
+        </div>
+        <input type="range" class="fader__input" id="instrFader" min="0" max="150" value="100" orient="vertical">
+      </div>
+      <div class="strip__value mono"><span id="instrDb">0 dB</span></div>
+      <div class="strip__actions">
+        <a class="icon-btn" id="instrDownload" href="#" download>Скачать инструментал</a>
+      </div>
+    </div>
+
+    <div class="transport">
+      <button class="transport-btn" id="playBtn" title="Воспроизвести / пауза">▶</button>
+      <div class="waveform"><canvas id="waveCanvas" style="width:100%; height:100%; display:block;"></canvas></div>
+      <div class="time mono" id="timeLabel">00:00 / 00:00</div>
+    </div>
+  </div>
+
+  <p class="footnote">Обработка идёт через модель Demucs на сервере: файл временно загружается для расчёта дорожек и не используется ни для чего другого. Используй только те записи, на распространение и обработку которых у тебя есть право. Сервис работает на бесплатном хостинге с ограниченной памятью, поэтому пока действуют лимиты на размер и длину файла.</p>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
